@@ -155,6 +155,7 @@ if __name__ == "__main__":
 	write_image = args.write_image
 
 	device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+	#device = torch.device('cpu')
 
 	if args.model_name is not None:
 		import unigaze
@@ -167,6 +168,7 @@ if __name__ == "__main__":
 		load_checkpoint(model, 'model_state', args.ckpt_resume)
 		model.eval()
 		model.to(device)
+		#torch.cuda.empty_cache()
 
 	image_torch_transform = wrap_transforms('basic_imagenet', image_size=224)
 	focal_norm = 960 # focal length of normalized camera
@@ -177,7 +179,8 @@ if __name__ == "__main__":
 	except:
 		fa = face_alignment.FaceAlignment(face_alignment.LandmarksType._2D, flip_input=False)
 
-	resize_factor = 0.5
+	# reduced to save memory
+	resize_factor = 0.1
 
 	## if input is a folder
 	if os.path.isdir(args.input_dir):
@@ -220,154 +223,226 @@ if __name__ == "__main__":
 
 		frame_idx = 0
 		pbar = tqdm(total=num_frames)
-		while(True):
-			pbar.update(1)
-			ret, image_original = cap.read()
-			if not ret:
-				break
+		
+		face_model_load = np.loadtxt( 'data/face_model.txt')
+		face_model = face_model_load[[20, 23, 26, 29, 15, 19], :]
+		facePts = face_model.reshape(6, 1, 3)
 
-			if resize_factor >= 1:
-				image_resize = image_original.copy()
-			else:
-				image_resize = cv2.resize(image_original, dsize=None, fx=resize_factor, fy=resize_factor, interpolation = cv2.INTER_AREA)
-			
-			image_resize = cv2.cvtColor(image_resize, cv2.COLOR_BGR2RGB)
-			preds = fa.get_landmarks(image_resize)
+		ref_face_pos = None
 
-
-			if preds is not None:
-				landmarks_record = {}
-				vector_start_end_point_list = {}
-				bbox_record = {}
+		# disabled gradient tracking to save GPU memory
+		with torch.no_grad():
+			while(True):
 				
-				for idx in range(len(preds)):
-					color = arrow_colors[idx % len(arrow_colors)]
-					landmarks_in_original = preds[idx] # array (68,2)
-					landmarks_in_original /= resize_factor
+				ret, image_original = cap.read()
+				if not ret:
+					break
+				pbar.update(1)
 
-					x_min = int(landmarks_in_original[:, 0].min())
-					x_max = int(landmarks_in_original[:, 0].max())
-					y_min = int(landmarks_in_original[:, 1].min())
-					y_max = int(landmarks_in_original[:, 1].max())
-					## each pred is a detected face
+				if resize_factor >= 1:
+					image_resize = image_original.copy()
+				else:
+					image_resize = cv2.resize(image_original, dsize=None, fx=resize_factor, fy=resize_factor, interpolation = cv2.INTER_AREA)
+				
+				image_resize = cv2.cvtColor(image_resize, cv2.COLOR_BGR2RGB)
+
+				preds = fa.get_landmarks(image_resize)
+
+
+				if preds is not None:
+					landmarks_record = {}
+					vector_start_end_point_list = {}
+					bbox_record = {}
 					
+					for idx in range(len(preds)):
+						color = arrow_colors[idx % len(arrow_colors)]
+						landmarks_in_original = preds[idx] # array (68,2)
+						landmarks_in_original /= resize_factor
 
-					## scale the bounding box by scale factor
+						x_min = int(landmarks_in_original[:, 0].min())
+						x_max = int(landmarks_in_original[:, 0].max())
+						y_min = int(landmarks_in_original[:, 1].min())
+						y_max = int(landmarks_in_original[:, 1].max())
+						## each pred is a detected face
+						
 
-					scale_factor =1.2
-					bbox_width = x_max - x_min
-					bbox_height = y_max - y_min
-					bbox_center = ( (x_min + x_max) // 2, (y_min + y_max) // 2 )
-					x_min_draw = max(0, bbox_center[0] - int(bbox_width * scale_factor // 2))
-					x_max_draw = min(image_original.shape[1], bbox_center[0] + int(bbox_width * scale_factor // 2))
-					y_min_draw = max(0, bbox_center[1] - int(bbox_height * scale_factor // 2))
-					y_max_draw = min(image_original.shape[0], bbox_center[1] + int(bbox_height * scale_factor // 2))
-					bbox_record[idx] = (x_min_draw, y_min_draw, x_max_draw, y_max_draw)
+						## scale the bounding box by scale factor
 
-
-					scale_factor = 2.0
-					bbox_width = x_max - x_min
-					bbox_height = y_max - y_min
-					bbox_center = ( (x_min + x_max) // 2, (y_min + y_max) // 2 )
-					x_min = max(0, bbox_center[0] - int(bbox_width * scale_factor // 2))
-					x_max = min(image_original.shape[1], bbox_center[0] + int(bbox_width * scale_factor // 2))
-					y_min = max(0, bbox_center[1] - int(bbox_height * scale_factor // 2))
-					y_max = min(image_original.shape[0], bbox_center[1] + int(bbox_height * scale_factor // 2))
-					
-
-					image = image_original[y_min:y_max, x_min:x_max]
-					landmarks = landmarks_in_original - np.array([x_min, y_min])
-
-					
-
-					################# normalization #################
-					camera_matrix, camera_distortion = set_dummy_camera_model(image=image)
-					face_model_load = np.loadtxt( 'data/face_model.txt')
-					face_model = face_model_load[[20, 23, 26, 29, 15, 19], :]
-					facePts = face_model.reshape(6, 1, 3)
-
-					landmarks_sub = landmarks[[36, 39, 42, 45, 31, 35], :]
-					landmarks_sub_paint = landmarks_sub
-					landmarks_sub = landmarks_sub.astype(float)  # input to solvePnP function must be float type
-					landmarks_sub = landmarks_sub.reshape(6, 1, 2)  # input to solvePnP requires such shape
-					hr, ht = estimateHeadPose(landmarks_sub, facePts, camera_matrix, camera_distortion)
-					hR = cv2.Rodrigues(hr)[0]  # rotation matrix
-					face_center_camera_cord, Fc_nose = get_face_center_by_nose(hR=hR, ht=ht, face_model_load=face_model_load)
-					
-					# -------------------------------------------- normalize image --------------------------------------------
-					img_normalized, R, hR_norm, gaze_normalized, landmarks_normalized, _ = normalize(image, landmarks, focal_norm, distance_norm, roi_size, face_center_camera_cord, hr, ht, camera_matrix, gc=None)
-					
-					hr_norm = np.array([np.arcsin(hR_norm[1, 2]),np.arctan2(hR_norm[0, 2], hR_norm[2, 2])])
-					if np.linalg.norm(hr_norm) > 80 * np.pi / 180 :
-						continue
-
-					input_var = img_normalized[:, :, [2, 1, 0]]  # from BGR to RGB
-					input_var = image_torch_transform(input_var)
-					input_var = torch.autograd.Variable(input_var.float().to(device))
-					input_var = input_var.unsqueeze(0)
-					ret = model(input_var)  # get the output gaze direction, this is 2D output as pitch and raw rotation
-					
-					pred_gaze = ret["pred_gaze"][0]
-					pred_gaze_np = pred_gaze.cpu().data.numpy()  # convert the pytorch tensor to numpy array
-					img_normalized = draw_gaze(img_normalized, pred_gaze_np, thickness=5, color=color)
-
-					if write_normalized_image or frame_idx % save_freq == 0:
-						# print( f"frame: {frame_idx}, idx: {idx}")
-						cv2.imwrite(os.path.join(image_output_folder, input_name + f'_{frame_idx}_{idx}_normalize.jpg'), img_normalized)
-					
-
-					R_inv = np.linalg.inv(R)
-					pred_gaze_cancel_nor, pred_yaw_pitch_cancel_nor = denormalize_predicted_gaze(pred_gaze_np, R_inv)
-					## project the 3D Gaze back to 2D image
-					vec_length = pred_gaze_cancel_nor * -112 * 1.5
-					gazeRay = np.concatenate((face_center_camera_cord.reshape(1,3), (face_center_camera_cord + vec_length).reshape(1,3)), axis=0)
-					result = cv2.projectPoints( gazeRay, 
-											np.array([0,0,0]).reshape(3,1).astype(float),
-											np.array([0,0,0]).reshape(3,1).astype(float), 
-											camera_matrix, camera_distortion )
-					result = result[0].reshape(2,2)
-					result += np.array([x_min, y_min])
-					
-					vector_start_point =  (int(result[0][0]), int(result[0][1]))
-					vector_end_point = (int(result[1][0]), int(result[1][1]))
-
-					vector_start_end_point_list[idx] = (vector_start_point, vector_end_point)
-					landmarks_record[idx] = landmarks_in_original
-					# bbox_record[idx] = (x_min, y_min, x_max, y_max)
+						scale_factor =1.2
+						bbox_width = x_max - x_min
+						bbox_height = y_max - y_min
+						bbox_center = ( (x_min + x_max) // 2, (y_min + y_max) // 2 )
+						x_min_draw = max(0, bbox_center[0] - int(bbox_width * scale_factor // 2))
+						x_max_draw = min(image_original.shape[1], bbox_center[0] + int(bbox_width * scale_factor // 2))
+						y_min_draw = max(0, bbox_center[1] - int(bbox_height * scale_factor // 2))
+						y_max_draw = min(image_original.shape[0], bbox_center[1] + int(bbox_height * scale_factor // 2))
+						bbox_record[idx] = (x_min_draw, y_min_draw, x_max_draw, y_max_draw)
 
 
+						scale_factor = 2.0
+						bbox_width = x_max - x_min
+						bbox_height = y_max - y_min
+						bbox_center = ( (x_min + x_max) // 2, (y_min + y_max) // 2 )
+						x_min = max(0, bbox_center[0] - int(bbox_width * scale_factor // 2))
+						x_max = min(image_original.shape[1], bbox_center[0] + int(bbox_width * scale_factor // 2))
+						y_min = max(0, bbox_center[1] - int(bbox_height * scale_factor // 2))
+						y_max = min(image_original.shape[0], bbox_center[1] + int(bbox_height * scale_factor // 2))
+						
 
-				for idx in list(landmarks_record.keys()):
-					
-					x_min, y_min, x_max, y_max = bbox_record[idx] ## this is just for draw
+						image = image_original[y_min:y_max, x_min:x_max]
+						landmarks = landmarks_in_original - np.array([x_min, y_min])
 
-					color = arrow_colors[idx % len(arrow_colors)]
+						
 
-					cv2.rectangle(image_original, (x_min, y_min), (x_max, y_max), (0, 0, 240), 2)
-					#### draw gaze
-					vector_start_point, vector_end_point = vector_start_end_point_list[idx]
-					# image_original = cv2.arrowedLine(image_original, vector_start_point, vector_end_point, color, thickness=3)
-					# Add a shadow effect for a 3D look
-					shadow_offset = 2
-					shadow_color = (40, 40, 40)  # Dark grey for shadow
-					shadow_end = (vector_end_point[0] + shadow_offset, vector_end_point[1] + shadow_offset)
-					cv2.arrowedLine(image_original, (vector_start_point[0] + shadow_offset, vector_start_point[1] + shadow_offset), shadow_end, shadow_color, 5, cv2.LINE_AA, tipLength=0.2)
+						################# normalization #################
+						camera_matrix, camera_distortion = set_dummy_camera_model(image=image)
+						# face_model_load = np.loadtxt( 'data/face_model.txt')
+						# face_model = face_model_load[[20, 23, 26, 29, 15, 19], :]
+						# facePts = face_model.reshape(6, 1, 3)
 
-					# Draw the main arrow with gradient layers to simulate depth
-					thickness_values = [ x * 3 for x in [4,3,2,1] ] 
-					num_layers = len(thickness_values)
-					for i in range(num_layers):
-						alpha = i / num_layers
-						layer_color = tuple(int((1 - alpha) * color[j] + alpha * 255) for j in range(3))  # Blend color towards white
-						cv2.arrowedLine(
-							image_original, vector_start_point, vector_end_point, layer_color, thickness_values[i],
-							cv2.LINE_AA, tipLength=0.2
-						)
-	
+						landmarks_sub = landmarks[[36, 39, 42, 45, 31, 35], :]
+						landmarks_sub_paint = landmarks_sub
+						landmarks_sub = landmarks_sub.astype(float)  # input to solvePnP function must be float type
+						landmarks_sub = landmarks_sub.reshape(6, 1, 2)  # input to solvePnP requires such shape
+						hr, ht = estimateHeadPose(landmarks_sub, facePts, camera_matrix, camera_distortion)
+						hR = cv2.Rodrigues(hr)[0]  # rotation matrix
+						face_center_camera_cord, Fc_nose = get_face_center_by_nose(hR=hR, ht=ht, face_model_load=face_model_load)
+						
+						# -------------------------------------------- normalize image --------------------------------------------
+						img_normalized, R, hR_norm, gaze_normalized, landmarks_normalized, _ = normalize(image, landmarks, focal_norm, distance_norm, roi_size, face_center_camera_cord, hr, ht, camera_matrix, gc=None)
+						
+						hr_norm = np.array([np.arcsin(hR_norm[1, 2]),np.arctan2(hR_norm[0, 2], hR_norm[2, 2])])
+						if np.linalg.norm(hr_norm) > 80 * np.pi / 180 :
+							continue
+
+						input_var = img_normalized[:, :, [2, 1, 0]]  # from BGR to RGB
+						input_var = image_torch_transform(input_var)
+						input_var = torch.autograd.Variable(input_var.float().to(device))
+						input_var = input_var.unsqueeze(0)
+						ret = model(input_var)  # get the output gaze direction, this is 2D output as pitch and raw rotation
+						
+						pred_gaze = ret["pred_gaze"][0]
+						pred_gaze_np = pred_gaze.cpu().data.numpy()  # convert the pytorch tensor to numpy array
+						
+						# # Free gpu memory (added)
+						# del input_var
+						# del ret
+						# del image_original, image_resize, preds, landmarks_record
+						# torch.cuda.empty_cache()
+
+						img_normalized = draw_gaze(img_normalized, pred_gaze_np, thickness=5, color=color)
+
+						if write_normalized_image or frame_idx % save_freq == 0:
+							print( f"frame: {frame_idx}, idx: {idx}")
+							cv2.imwrite(os.path.join(image_output_folder, input_name + f'_{frame_idx}_{idx}_normalize.jpg'), img_normalized)
+						
+
+						R_inv = np.linalg.inv(R)
+						pred_gaze_3d, _ = denormalize_predicted_gaze(pred_gaze_np, R_inv)
+						#pred_gaze_cancel_nor, pred_yaw_pitch_cancel_nor = denormalize_predicted_gaze(pred_gaze_np, R_inv)
+						
+						#LOOKAT_THRESHOLD = 0.7
+
+						# ref_face_pos = face_center_camera_cord.copy()
+						# vec_to_ref = face_center_camera_cord - ref_face_pos
+						# vec_to_ref /= np.linalg.norm(vec_to_ref)
+						
+						# dot_prod = np.dot(pred_gaze_3d.flatten(), vec_to_ref.flatten())
+
+						# if frame_idx == 0:
+						# 	ref_face_pos = face_center_camera_cord.copy()  # store reference position
+						# 	gaze_label = "LookAt"  
+
+						# else:				
+						# 	vec_to_ref = face_center_camera_cord - ref_face_pos
+						# 	vec_to_ref /= np.linalg.norm(vec_to_ref)
+						
+						# 	dot_prod = np.dot(pred_gaze_3d.flatten(), vec_to_ref.flatten())
+						
+						# 	gaze_label = "LookAt" if dot_prod > LOOKAT_THRESHOLD else "NotLookAt"
+						
+						# if ref_face_pos is None:
+						# 	ref_face_pos = face_center_camera_cord.copy()
+						# 	gaze_label = "LookAt"
+						# 	dot_prod = 1.0
+						# else:
+						# 	vec_to_ref = ref_face_pos - face_center_camera_cord
+						# 	vec_to_ref /= np.linalg.norm(vec_to_ref)
+							
+						# 	dot_prod = np.dot(pred_gaze_3d.flatten(), vec_to_ref.flatten())
+						# 	gaze_label = "LookAt" if dot_prod > LOOKAT_THRESHOLD else "NotLookAt"
+
+						# cv2.putText(
+						# 	image_original, 
+    					# 	f"{gaze_label} ({dot_prod:.2f})", 
+    					# 	(50, 50),  
+    					# 	cv2.FONT_HERSHEY_SIMPLEX, 
+    					# 	1,          # font scale
+    					# 	(0, 255, 0),
+    					# 	2           # thickness
+						# )
+						
+						## project the 3D Gaze back to 2D image
+						vec_length = pred_gaze_3d * -112 * 1.5
+						gazeRay = np.concatenate((face_center_camera_cord.reshape(1,3), (face_center_camera_cord + vec_length).reshape(1,3)), axis=0)
+						result = cv2.projectPoints( gazeRay, 
+												np.array([0,0,0]).reshape(3,1).astype(float),
+												np.array([0,0,0]).reshape(3,1).astype(float), 
+												camera_matrix, camera_distortion )
+						result = result[0].reshape(2,2)
+						result += np.array([x_min, y_min])
+						
+						vector_start_point =  (int(result[0][0]), int(result[0][1]))
+						vector_end_point = (int(result[1][0]), int(result[1][1]))
+
+						vector_start_end_point_list[idx] = (vector_start_point, vector_end_point)
+						landmarks_record[idx] = landmarks_in_original
+						# bbox_record[idx] = (x_min, y_min, x_max, y_max)
+
+
+
+					for idx in list(landmarks_record.keys()):
+						
+						x_min, y_min, x_max, y_max = bbox_record[idx] ## this is just for draw
+
+						color = arrow_colors[idx % len(arrow_colors)]
+
+						cv2.rectangle(image_original, (x_min, y_min), (x_max, y_max), (0, 0, 240), 2)
+						#### draw gaze
+						vector_start_point, vector_end_point = vector_start_end_point_list[idx]
+						# image_original = cv2.arrowedLine(image_original, vector_start_point, vector_end_point, color, thickness=3)
+						# Add a shadow effect for a 3D look
+						shadow_offset = 2
+						shadow_color = (40, 40, 40)  # Dark grey for shadow
+						shadow_end = (vector_end_point[0] + shadow_offset, vector_end_point[1] + shadow_offset)
+						cv2.arrowedLine(image_original, (vector_start_point[0] + shadow_offset, vector_start_point[1] + shadow_offset), shadow_end, shadow_color, 5, cv2.LINE_AA, tipLength=0.2)
+
+						# Draw the main arrow with gradient layers to simulate depth
+						thickness_values = [ x * 3 for x in [4,3,2,1] ] 
+						num_layers = len(thickness_values)
+						for i in range(num_layers):
+							alpha = i / num_layers
+							layer_color = tuple(int((1 - alpha) * color[j] + alpha * 255) for j in range(3))  # Blend color towards white
+							cv2.arrowedLine(
+								image_original, vector_start_point, vector_end_point, layer_color, thickness_values[i],
+								cv2.LINE_AA, tipLength=0.2
+							)
+
+						# cv2.putText(
+                    	# 	image_original,
+                    	# 	#gaze_label,
+                    	# 	(x_min, y_min - 10),
+                    	# 	cv2.FONT_HERSHEY_SIMPLEX,
+                    	# 	0.8,
+                    	# 	#(0,255,0) if gaze_label=="LookAt" else (0,0,255),
+                    	# 	2,
+                    	# 	cv2.LINE_AA
+                		# )
+		
 
 				if write_image or frame_idx % save_freq == 0:
 					# print( f"frame: {frame_idx}")
 					cv2.imwrite(os.path.join(image_output_folder, input_name + f'_{frame_idx}.jpg'), image_original)
 				
-			out.write(image_original)
-			frame_idx += 1
+				out.write(image_original)
+				frame_idx += 1
