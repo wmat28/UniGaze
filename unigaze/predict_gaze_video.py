@@ -218,7 +218,8 @@ if __name__ == "__main__":
 		face_model = face_model_load[[20, 23, 26, 29, 15, 19], :]
 		facePts = face_model.reshape(6, 1, 3)
 
-		ref_face_pos = None
+		target_pos = None
+		LOOKAT_THRESHOLD = 0.96 
 
 		# disabled gradient tracking to save GPU memory
 		with torch.no_grad():
@@ -329,6 +330,27 @@ if __name__ == "__main__":
 						R_inv = np.linalg.inv(R)
 						pred_gaze_3d, _ = denormalize_predicted_gaze(pred_gaze_np, R_inv)
 						
+						if target_pos is None:
+							# First frame: assume looking at target
+							depth_scale = 1000.0  # adjust if needed
+							target_pos = face_center_camera_cord.flatten() + depth_scale * pred_gaze_3d.flatten()
+							
+							gaze_label = "LookAt"
+							dot_prod = 1.0
+							
+						else:
+							vec_to_target = target_pos - face_center_camera_cord.flatten()
+							
+							norm = np.linalg.norm(vec_to_target)
+							if norm > 1e-6:
+								vec_to_target /= norm
+							else:
+								continue
+							
+							dot_prod = np.dot(pred_gaze_3d.flatten(), vec_to_target)
+							
+							gaze_label = "LookAt" if dot_prod > LOOKAT_THRESHOLD else "NotLookAt"
+
 						## project the 3D Gaze back to 2D image
 						vec_length = pred_gaze_3d * -112 * 1.5
 						gazeRay = np.concatenate((face_center_camera_cord.reshape(1,3), (face_center_camera_cord + vec_length).reshape(1,3)), axis=0)
@@ -345,8 +367,6 @@ if __name__ == "__main__":
 						vector_start_end_point_list[idx] = (vector_start_point, vector_end_point)
 						landmarks_record[idx] = landmarks_in_original
 						# bbox_record[idx] = (x_min, y_min, x_max, y_max)
-
-
 
 					for idx in list(landmarks_record.keys()):
 						
@@ -374,6 +394,17 @@ if __name__ == "__main__":
 								image_original, vector_start_point, vector_end_point, layer_color, thickness_values[i],
 								cv2.LINE_AA, tipLength=0.2
 							)
+						
+						cv2.putText(
+							image_original,
+							f"{gaze_label} ({dot_prod:.2f})",
+							(x_min, y_min - 10),
+							cv2.FONT_HERSHEY_SIMPLEX,
+							0.8,
+							(0,255,0) if gaze_label=="LookAt" else (0,0,255),
+							2,
+							cv2.LINE_AA
+						)
 
 
 				if write_image or frame_idx % save_freq == 0:
