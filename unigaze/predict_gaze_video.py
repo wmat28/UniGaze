@@ -52,9 +52,6 @@ def draw_gaze(image_in, pitchyaw, thickness=8, color=(0, 0, 255)):
 
 	return image_out
 
-
-
-
 def denormalize_predicted_gaze(gaze_yaw_pitch, R_inv):
 	pred_gaze_cancel_nor = pitchyaw_to_vector(gaze_yaw_pitch.reshape(1,2)).reshape(3,1) # get 3d gaze direction as a vector
 
@@ -63,10 +60,6 @@ def denormalize_predicted_gaze(gaze_yaw_pitch, R_inv):
 	
 	pred_yaw_pitch_cancel_nor = vector_to_pitchyaw(pred_gaze_cancel_nor.reshape(1,3)) # convert to yaw and pitch
 	return pred_gaze_cancel_nor, pred_yaw_pitch_cancel_nor
-
-
-
-
 
 def get_parser(**parser_kwargs):
 	def str2bool(v):
@@ -108,9 +101,6 @@ def get_parser(**parser_kwargs):
 	)
 	
 	return parser
-
-
-
 
 def set_dummy_camera_model(image=None):
 	h, w = image.shape[:2]
@@ -265,7 +255,6 @@ if __name__ == "__main__":
 						y_max = int(landmarks_in_original[:, 1].max())
 						## each pred is a detected face
 						
-
 						## scale the bounding box by scale factor
 
 						scale_factor =1.2
@@ -324,7 +313,7 @@ if __name__ == "__main__":
 						pred_gaze = ret["pred_gaze"][0]
 						pred_gaze_np = pred_gaze.cpu().data.numpy()  # convert the pytorch tensor to numpy array
 						
-						# # Free gpu memory (added)
+						# # Free gpu memory
 						# del input_var
 						# del ret
 						# del image_original, image_resize, preds, landmarks_record
@@ -339,48 +328,6 @@ if __name__ == "__main__":
 
 						R_inv = np.linalg.inv(R)
 						pred_gaze_3d, _ = denormalize_predicted_gaze(pred_gaze_np, R_inv)
-						#pred_gaze_cancel_nor, pred_yaw_pitch_cancel_nor = denormalize_predicted_gaze(pred_gaze_np, R_inv)
-						
-						#LOOKAT_THRESHOLD = 0.7
-
-						# ref_face_pos = face_center_camera_cord.copy()
-						# vec_to_ref = face_center_camera_cord - ref_face_pos
-						# vec_to_ref /= np.linalg.norm(vec_to_ref)
-						
-						# dot_prod = np.dot(pred_gaze_3d.flatten(), vec_to_ref.flatten())
-
-						# if frame_idx == 0:
-						# 	ref_face_pos = face_center_camera_cord.copy()  # store reference position
-						# 	gaze_label = "LookAt"  
-
-						# else:				
-						# 	vec_to_ref = face_center_camera_cord - ref_face_pos
-						# 	vec_to_ref /= np.linalg.norm(vec_to_ref)
-						
-						# 	dot_prod = np.dot(pred_gaze_3d.flatten(), vec_to_ref.flatten())
-						
-						# 	gaze_label = "LookAt" if dot_prod > LOOKAT_THRESHOLD else "NotLookAt"
-						
-						# if ref_face_pos is None:
-						# 	ref_face_pos = face_center_camera_cord.copy()
-						# 	gaze_label = "LookAt"
-						# 	dot_prod = 1.0
-						# else:
-						# 	vec_to_ref = ref_face_pos - face_center_camera_cord
-						# 	vec_to_ref /= np.linalg.norm(vec_to_ref)
-							
-						# 	dot_prod = np.dot(pred_gaze_3d.flatten(), vec_to_ref.flatten())
-						# 	gaze_label = "LookAt" if dot_prod > LOOKAT_THRESHOLD else "NotLookAt"
-
-						# cv2.putText(
-						# 	image_original, 
-    					# 	f"{gaze_label} ({dot_prod:.2f})", 
-    					# 	(50, 50),  
-    					# 	cv2.FONT_HERSHEY_SIMPLEX, 
-    					# 	1,          # font scale
-    					# 	(0, 255, 0),
-    					# 	2           # thickness
-						# )
 						
 						## project the 3D Gaze back to 2D image
 						vec_length = pred_gaze_3d * -112 * 1.5
@@ -428,17 +375,6 @@ if __name__ == "__main__":
 								cv2.LINE_AA, tipLength=0.2
 							)
 
-						# cv2.putText(
-                    	# 	image_original,
-                    	# 	#gaze_label,
-                    	# 	(x_min, y_min - 10),
-                    	# 	cv2.FONT_HERSHEY_SIMPLEX,
-                    	# 	0.8,
-                    	# 	#(0,255,0) if gaze_label=="LookAt" else (0,0,255),
-                    	# 	2,
-                    	# 	cv2.LINE_AA
-                		# )
-		
 
 				if write_image or frame_idx % save_freq == 0:
 					# print( f"frame: {frame_idx}")
